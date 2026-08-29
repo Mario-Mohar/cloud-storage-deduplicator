@@ -582,8 +582,15 @@ def main(
             total_errors = 0
             batch_num = 0
 
-            # Auto-save file for batch processing
-            batch_save_file = save_scan or "batch_progress.json"
+            # Auto-save file for batch processing.
+            # Deliberately NOT save_scan itself: that file is what the user asked
+            # to keep ("save scan results for later resume"), while this one is
+            # scratch state that gets truncated after every batch and removed at
+            # the end. Sharing one path meant the saved scan was destroyed.
+            batch_save_file = (
+                str(Path(save_scan).with_suffix(".progress.json")) if save_scan
+                else "batch_progress.json"
+            )
 
             while duplicate_groups:
                 batch_num += 1
@@ -594,15 +601,22 @@ def main(
                 click.echo(f"=== Batch {batch_num}: processing {len(current_batch)} groups ({len(remaining)} remaining) ===")
 
                 # Move this batch
+                moved_before = detector.stats.files_moved
+                errors_before = detector.stats.errors
                 log_entries = detector.move_duplicates(
                     duplicate_groups=current_batch,
                     target_folder_id=target_folder_id or "",
                     dry_run=False
                 )
 
-                # Count results
-                batch_moved = sum(1 for e in log_entries if e.action == "moved" and not e.errors)
-                batch_errors = sum(1 for e in log_entries if e.errors)
+                # Count results off the detector's own counters. log_entries
+                # holds one entry per GROUP, so counting them reported groups
+                # while calling them files -- 100 files in 30 groups came out as
+                # "30 files moved".
+                batch_moved = detector.stats.files_moved - moved_before
+                batch_errors = detector.stats.errors - errors_before
+                moved_before = detector.stats.files_moved
+                errors_before = detector.stats.errors
                 total_moved += batch_moved
                 total_errors += batch_errors
 
