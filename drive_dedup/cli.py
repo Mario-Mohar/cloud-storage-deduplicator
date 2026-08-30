@@ -10,6 +10,7 @@ from typing import Optional, List
 import click
 
 from .models import DriveFile, DuplicateGroup
+from .undo import UndoNotPossible, plan_undo, read_log, run_undo
 
 from .auth import GoogleDriveAuth
 from .dedup import DuplicateDetector
@@ -248,7 +249,7 @@ def get_provider_client(
         raise click.ClickException(f"Unknown provider: {provider}")
 
 
-@click.command()
+@click.group(invoke_without_command=True)
 @click.option(
     '--provider',
     type=click.Choice(PROVIDERS),
@@ -367,7 +368,9 @@ def get_provider_client(
     default=False,
     help='Require confirmation for non-reversible operations (default: false)'
 )
+@click.pass_context
 def main(
+    ctx: click.Context,
     provider: str,
     list_folders: bool,
     dry_run: bool,
@@ -419,6 +422,9 @@ def main(
 
         # Include files without native checksums in comparison
         drive-dedup --use-fallback-hash
+
+        # Put a previous run back where it came from
+        drive-dedup undo runs/2026-08-29.jsonl
     """
     # Set up logging
     setup_logging(log_level=log_level, log_file=log_file)
@@ -426,6 +432,23 @@ def main(
     # Set default token file based on provider
     if token_file is None:
         token_file = 'onedrive_token.json' if provider == 'onedrive' else 'token.json'
+
+    # `undo` needs the same provider and credential options. They stay on the
+    # group rather than being repeated, so that `drive-dedup --flags` keeps
+    # working exactly as before -- this is a group only so that a subcommand
+    # can exist at all.
+    ctx.obj = {
+        'provider': provider,
+        'credentials_file': credentials_file,
+        'token_file': token_file,
+        'client_id': client_id,
+        'account_type': account_type,
+        'scopes': scopes,
+        'concurrency': concurrency,
+        'dry_run': dry_run,
+    }
+    if ctx.invoked_subcommand is not None:
+        return
 
     try:
         # Parse custom scopes if provided
@@ -679,6 +702,114 @@ def main(
         logger.error("Unexpected error: %s", e, exc_info=True)
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+
+
+@main.command()
+@click.argument('logfile', type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    '--dry-run/--no-dry-run',
+    default=None,
+    help='Show what would be put back without moving anything (default: true)'
+)
+@click.option(
+    '--json-log',
+    type=str,
+    default=None,
+    help='Write a JSONL log of this undo, so it can be undone in turn'
+)
+@click.pass_context
+def undo(
+    ctx: click.Context,
+    logfile: str,
+    dry_run: Optional[bool],
+    json_log: Optional[str]
+) -> None:
+    """Move duplicates from a previous run back where they came from.
+
+    Reads the JSONL log a run wrote and puts every moved file back into the
+    folder it came from. Like everything else here it is a dry run by default.
+
+    Examples:
+        drive-dedup undo runs/2026-08-29.jsonl
+        drive-dedup undo runs/2026-08-29.jsonl --no-dry-run
+    """
+    options = ctx.obj or {}
+    # The flag can stand before the subcommand or after it; the one written
+    # closer to the command wins.
+    if dry_run is None:
+        dry_run = options.get('dry_run', True)
+
+    try:
+        steps, notes = plan_undo(list(read_log(logfile)))
+    except UndoNotPossible as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    except OSError as exc:
+        click.echo(f"Error: could not read {logfile}: {exc}", err=True)
+        sys.exit(1)
+
+    for note in notes:
+        click.echo(f"  note: {note}")
+
+    if not steps:
+        click.echo("Nothing to put back: this log records no moved files.")
+        return
+
+    click.echo(
+        f"{len(steps)} file(s) to put back"
+        + (" (dry run, nothing will be moved)" if dry_run else "")
+    )
+
+    oauth_scopes = None
+    if options.get('scopes'):
+        oauth_scopes = [scope.strip() for scope in options['scopes'].split(',')]
+    account_type = {
+        'personal': 'consumers',
+        'work': 'organizations',
+        'common': 'common'
+    }.get(options.get('account_type', 'personal'), 'consumers')
+
+    try:
+        client, provider_name = get_provider_client(
+            provider=options.get('provider', 'google'),
+            credentials_file=options.get('credentials_file', 'credentials.json'),
+            token_file=options.get('token_file') or 'token.json',
+            client_id=options.get('client_id'),
+            concurrency=options.get('concurrency', 5),
+            oauth_scopes=oauth_scopes,
+            account_type=account_type
+        )
+    except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+        click.echo(f"Error: could not connect: {exc}", err=True)
+        sys.exit(1)
+
+    click.echo(f"Connected to {provider_name}")
+    result = run_undo(client, steps, dry_run=dry_run)
+
+    for note in result.notes:
+        click.echo(f"  note: {note}")
+
+    verb = "would be put back" if dry_run else "put back"
+    click.echo(f"\n{result.restored} file(s) {verb}")
+    if result.skipped:
+        click.echo(f"{result.skipped} skipped")
+    if result.failed:
+        click.echo(f"{result.failed} failed")
+
+    # Without a log of its own, undoing would be a one-way street in the other
+    # direction.
+    if json_log and not dry_run:
+        with open(json_log, 'w', encoding='utf-8') as handle:
+            for step in steps:
+                handle.write(json.dumps({
+                    'timestamp': datetime.now().isoformat(),
+                    'action': 'undone',
+                    'file_id': step.file_id,
+                    'name': step.name,
+                    'from': step.duplicates_folder_id,
+                    'to': step.target_folder_id,
+                }) + "\n")
+        click.echo(f"Undo log saved to: {json_log}")
 
 
 if __name__ == '__main__':

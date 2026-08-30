@@ -442,6 +442,28 @@ class OneDriveClient(BaseStorageClient):
                 logger.error("Error getting folder info for %s: %s", folder_id, e)
                 raise
 
+    def get_file_parents(self, file_id: str) -> Optional[List[str]]:
+        """The one folder the file sits in, or None if it is gone.
+
+        OneDrive has no multi-parent model, so this list never holds more than
+        one entry -- the signature matches Drive's so that `undo` does not have
+        to know which provider it is talking to.
+        """
+        try:
+            response = self._make_request(
+                "GET",
+                f"/me/drive/items/{file_id}",
+                params={"$select": "id,parentReference"}
+            )
+            parent_id = response.json().get('parentReference', {}).get('id')
+            return [parent_id] if parent_id else []
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                logger.debug("File %s not found", file_id)
+                return None
+            logger.error("Error getting parents for %s: %s", file_id, e)
+            raise
+
     def find_or_create_folder(
         self,
         name: str,

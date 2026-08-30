@@ -109,6 +109,24 @@ class BaseStorageClient(ABC):
         pass
 
     @abstractmethod
+    def get_file_parents(self, file_id: str) -> Optional[List[str]]:
+        """Folders the file currently sits in.
+
+        `undo` needs this to tell "still in the duplicates folder" apart from
+        "somebody has sorted this by hand since". Drive lets a file sit in
+        several folders and returns all of them; OneDrive has no multi-parent
+        model and returns at most one. That difference belongs here rather than
+        in the caller.
+
+        Args:
+            file_id: ID of the file
+
+        Returns:
+            List of parent folder IDs, or None if the file is gone
+        """
+        pass
+
+    @abstractmethod
     def find_or_create_folder(
         self,
         name: str,

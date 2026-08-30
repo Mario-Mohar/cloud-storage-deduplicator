@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cloud-storage-deduplicator"
-version = "2.0.0"
+version = "2.1.0"
 description = "A production-ready tool for finding and managing duplicate files in Google Drive and OneDrive"
 authors = [{name = "Mario Mohar"}]
 license = {text = "MIT"}

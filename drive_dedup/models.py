@@ -143,6 +143,13 @@ class OperationResult:
             self.timestamp = datetime.now()
 
 
+# Bumped when the shape of a log record changes in a way `undo` cares about.
+# Version 1 recorded only which files were moved and where to, never where they
+# came from -- such a log cannot be undone, and `undo` says so plainly instead
+# of failing obscurely.
+LOG_VERSION = 2
+
+
 @dataclass
 class LogEntry:
     """Structured log entry for JSON logging."""
@@ -156,6 +163,12 @@ class LogEntry:
     errors: Optional[List[str]] = None
     file_names: Optional[List[str]] = None
     total_size: Optional[int] = None
+    # Per moved file, so a run can be reversed: where it went is already known
+    # from move_target_folder_id, but where it came from was nowhere in the
+    # record. `duplicate_ids` stays alongside it -- readers of older logs keep
+    # working, and the two are written from the same list.
+    moved: Optional[List[Dict]] = None
+    version: int = LOG_VERSION
 
     @classmethod
     def from_duplicate_group(
@@ -166,14 +179,19 @@ class LogEntry:
         errors: Optional[List[str]] = None
     ) -> "LogEntry":
         """Create log entry from duplicate group."""
+        duplicates = group.duplicate_files
         return cls(
             timestamp=datetime.now().isoformat(),
             primary_id=group.comparison_key,
             kept_id=group.kept_file.id if group.kept_file else "",
-            duplicate_ids=[f.id for f in group.duplicate_files],
+            duplicate_ids=[f.id for f in duplicates],
             action=action,
             move_target_folder_id=target_folder_id,
             errors=errors,
             file_names=[f.name for f in group.files],
-            total_size=group.total_size
+            total_size=group.total_size,
+            moved=[
+                {"id": f.id, "name": f.name, "from": list(f.parents or [])}
+                for f in duplicates
+            ]
         )

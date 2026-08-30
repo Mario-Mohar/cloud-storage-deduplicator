@@ -31,6 +31,7 @@ then files are *moved into a folder you choose*, never deleted.
 - **Checksum-based matching** — MD5 on Google, SHA1/SHA256 on OneDrive
 - **Dry run by default** — see the full report before anything moves
 - **Never deletes** — duplicates are moved to a folder you name
+- **Undo** — `drive-dedup undo <logfile>` puts a whole run back where it came from
 - **Oldest copy wins** — the original stays exactly where it is
 - **Built for large accounts** — pagination, configurable concurrency, exponential backoff on rate limits
 - **Two logs** — a readable report and a machine-readable JSONL record of every action
@@ -180,6 +181,34 @@ secret is in the git history. Revoke it at the source:
 [Google account access](https://myaccount.google.com/permissions) or
 [Microsoft apps](https://account.live.com/consent/Manage).
 
+## Undoing a run
+
+A duplicates folder full of files nobody dares delete is not a solved problem,
+just a deferred one. Being able to press undo is what makes it possible to
+press go.
+
+```bash
+drive-dedup undo runs/2026-08-29.jsonl                    # dry run, prints what it would do
+drive-dedup undo runs/2026-08-29.jsonl --no-dry-run       # actually put them back
+drive-dedup undo runs/2026-08-29.jsonl --no-dry-run --json-log runs/undo.jsonl
+```
+
+Every file is checked before it is touched:
+
+- **Still in the duplicates folder?** If you have sorted it somewhere yourself
+  since the run, it is left alone and mentioned in the report.
+- **Still there at all?** A file that has been deleted is skipped, not an error.
+- **Several source folders?** Drive lets a file sit in more than one. It goes
+  back into the first one recorded, and the report says so. OneDrive has no
+  multi-parent model, so this never comes up there.
+
+Pass `--json-log` and the undo writes its own record, so it can be undone in
+turn.
+
+**Logs written before version 2.1.0 cannot be undone.** They record which files
+were moved and where to, but not where they came from. `undo` says so and stops
+rather than guessing.
+
 ## Safety
 
 What this tool does **not** do: delete files, change their contents, read their
@@ -206,9 +235,18 @@ One JSON object per line (JSONL):
   "move_target_folder_id": "1JKL012target",
   "errors": null,
   "file_names": ["original.pdf", "copy1.pdf", "copy2.pdf"],
-  "total_size": 3145728
+  "total_size": 3145728,
+  "moved": [
+    {"id": "1DEF456duplicate1", "name": "copy1.pdf", "from": ["1MNO345source"]},
+    {"id": "1GHI789duplicate2", "name": "copy2.pdf", "from": ["1PQR678source"]}
+  ],
+  "version": 2
 }
 ```
+
+`moved` is what makes `undo` possible: `move_target_folder_id` says where the
+files went, and `from` says where each one came from. `duplicate_ids` stays
+alongside it so that anything already reading these logs keeps working.
 
 ## Troubleshooting
 

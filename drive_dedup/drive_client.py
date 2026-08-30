@@ -294,6 +294,24 @@ class GoogleDriveClient(BaseStorageClient):
                 logger.error("Error getting folder info for %s: %s", folder_id, e)
                 raise
 
+    def get_file_parents(self, file_id: str) -> Optional[List[str]]:
+        """Folders the file currently sits in, or None if it is gone.
+
+        Drive allows several parents, so this is a list. A file that has been
+        deleted since the run is not an error worth stopping an undo for.
+        """
+        try:
+            metadata = self.service.files().get(
+                fileId=file_id, fields='parents'
+            ).execute()
+            return list(metadata.get('parents') or [])
+        except HttpError as e:
+            if e.resp.status == 404:
+                logger.debug("File %s not found", file_id)
+                return None
+            logger.error("Error getting parents for %s: %s", file_id, e)
+            raise
+
     def find_or_create_folder(
         self,
         name: str,
