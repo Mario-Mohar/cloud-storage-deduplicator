@@ -310,8 +310,15 @@ tests/                Test suite
 
 ## Contributing
 
-Issues and pull requests are welcome. Please run `pytest`, `black` and `ruff`
-before opening a PR.
+Bug reports, feature requests and pull requests are all welcome — finding
+something that is broken and writing it down is a real contribution, and the
+most useful one.
+
+**[CONTRIBUTING.md](CONTRIBUTING.md)** has the details: what makes a report
+useful, how to send a fix through a fork, and what happens after you submit.
+The short version is that `ruff check .` and `pytest tests/` have to pass;
+`black` and `mypy` are reported on the pull request but do not block, for
+reasons written down there.
 
 ## License
 
