@@ -1,0 +1,41 @@
+name: Bug report
+description: Something behaves differently than it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "**Never paste an OAuth token, a client secret or a credentials.json.**"
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider
+      options: ["Google Drive", "OneDrive", "Both"]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: The command you ran
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: dryrun
+    attributes:
+      label: Dry run output, redacted
+      description: The single most useful thing you can attach.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Version and Python
+      description: The `version` in pyproject.toml, and `python3 --version`.
+    validations:
+      required: true
