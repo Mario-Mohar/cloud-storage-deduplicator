@@ -2,14 +2,13 @@
 
 import json
 import logging
-import threading
+import secrets
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import List, Optional
-from urllib.parse import parse_qs, urlparse, urlencode
-import time
-import secrets
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 
@@ -255,7 +254,7 @@ class OneDriveAuth(BaseStorageAuth):
         # Open browser
         try:
             webbrowser.open(auth_url)
-        except Exception as e:
+        except Exception:
             print(f"\nKonnte Browser nicht oeffnen. Bitte oeffne diese URL manuell:\n{auth_url}\n")
 
         # Wait for callback

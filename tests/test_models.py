@@ -1,9 +1,8 @@
 """Tests for data models."""
 
-import pytest
 from datetime import datetime
 
-from drive_dedup.models import DriveFile, DuplicateGroup, ScanStats, LogEntry
+from drive_dedup.models import DriveFile, DuplicateGroup, LogEntry, ScanStats
 
 
 class TestDriveFile:

@@ -5,16 +5,13 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List
+from typing import List, Optional
 
 import click
 
+from .dedup import DuplicateDetector
 from .models import DriveFile, DuplicateGroup
 from .undo import UndoNotPossible, plan_undo, read_log, run_undo
-
-from .auth import GoogleDriveAuth
-from .dedup import DuplicateDetector
-from .drive_client import GoogleDriveClient
 from .utils import format_file_size, setup_logging, validate_folder_id
 
 logger = logging.getLogger(__name__)
@@ -73,8 +70,9 @@ def _list_folders(
             click.echo(f"{name:<50} {folder['id']}")
 
     elif provider == 'onedrive':
-        from .onedrive_auth import OneDriveAuth
         import requests
+
+        from .onedrive_auth import OneDriveAuth
 
         auth = OneDriveAuth(
             client_id=client_id,
@@ -539,7 +537,7 @@ def main(
             folder_info = storage_client.get_folder_info(target_folder_id)
             if not folder_info:
                 if create_folder_if_missing:
-                    click.echo(f"Creating target folder '_duplicates'...")
+                    click.echo("Creating target folder '_duplicates'...")
                     target_folder_id = storage_client.create_folder("_duplicates")
                     click.echo(f"Created folder with ID: {target_folder_id}")
                 else:
@@ -600,7 +598,6 @@ def main(
 
         # Process in batches if requested
         if batch_size > 0 and not dry_run:
-            total_groups = len(duplicate_groups)
             total_moved = 0
             total_errors = 0
             batch_num = 0

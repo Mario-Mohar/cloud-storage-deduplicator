@@ -1,11 +1,12 @@
 """Tests for OneDrive authentication and client."""
 
+from unittest.mock import Mock, patch
+
 import pytest
-from unittest.mock import Mock, patch, MagicMock
 import requests
 
-from drive_dedup.onedrive_client import OneDriveClient
 from drive_dedup.models import DriveFile, OperationResult
+from drive_dedup.onedrive_client import OneDriveClient
 
 
 @pytest.fixture
@@ -216,6 +217,7 @@ class TestOneDriveAuth:
     def test_auth_requires_client_id(self):
         """Without a client ID, initialization must fail with a clear error."""
         import pytest
+
         from drive_dedup.onedrive_auth import OneDriveAuth
 
         with pytest.raises(ValueError, match="client ID"):
@@ -243,8 +245,9 @@ class TestOneDriveAuth:
 
     def test_token_validity_check(self):
         """Test token validity checking."""
-        from drive_dedup.onedrive_auth import OneDriveAuth
         import time
+
+        from drive_dedup.onedrive_auth import OneDriveAuth
 
         auth = OneDriveAuth(client_id="custom_client_id")
 

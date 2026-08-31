@@ -1,0 +1,151 @@
+name: PR report
+
+# Posts the CI result on the pull request, labels it, and says whether it is
+# ready to merge.
+#
+# This is separate from ci.yml for one reason: a pull request from a fork gets
+# a read-only token, so the CI run itself cannot comment or label. A
+# workflow_run job is started by the *default branch* after CI finishes, holds a
+# write token, and never checks out or executes the contributed code -- it only
+# reads the artifact CI produced. That is the difference between this and
+# pull_request_target, which would hand a write token to a fork's code.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  report:
+    name: Comment and label
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the CI report
+        uses: actions/download-artifact@v4
+        with:
+          name: pr-report
+          path: pr-report
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read the report
+        id: read
+        run: |
+          pr=$(cat pr-report/pr-number.txt)
+          status=$(cat pr-report/status.txt)
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.read.outputs.pr }}
+          STATUS: ${{ steps.read.outputs.status }}
+        run: |
+          set -euo pipefail
+
+          ensure() {  # name, colour, description
+            gh label create "$1" --repo "$REPO" --color "$2" --description "$3" 2>/dev/null || true
+          }
+          ensure "ci:passing"    "0e8a16" "All pipeline checks pass"
+          ensure "ci:failing"    "d73a4a" "At least one pipeline check fails"
+          ensure "ready-to-merge" "5319e7" "Checks pass and the pull request is not a draft"
+          for size in XS:c2e0c6 S:c2e0c6 M:fbca04 L:d93f0b XL:b60205; do
+            ensure "size/${size%%:*}" "${size##*:}" "Pull request size by lines changed"
+          done
+          ensure "type:fix"    "d73a4a" "Bug fix"
+          ensure "type:feature" "0075ca" "New feature"
+          ensure "type:docs"   "0075ca" "Documentation"
+          ensure "type:internal" "d4c5f9" "Refactor, tests, tooling"
+
+          read -r additions deletions title draft < <(
+            gh pr view "$PR" --repo "$REPO" \
+              --json additions,deletions,title,isDraft \
+              --jq '[.additions, .deletions, (.title|@base64), .isDraft] | @tsv'
+          )
+          title=$(echo "$title" | base64 -d)
+          changed=$(( additions + deletions ))
+
+          if   [ "$changed" -lt 10 ];  then size=XS
+          elif [ "$changed" -lt 50 ];  then size=S
+          elif [ "$changed" -lt 200 ]; then size=M
+          elif [ "$changed" -lt 600 ]; then size=L
+          else                              size=XL
+          fi
+
+          case "$title" in
+            fix*)                       type=type:fix ;;
+            feat*)                      type=type:feature ;;
+            docs*)                      type=type:docs ;;
+            chore*|refactor*|test*|ci*) type=type:internal ;;
+            *)                          type="" ;;
+          esac
+
+          add="size/$size"
+          remove=""
+          for other in XS S M L XL; do
+            [ "$other" = "$size" ] || remove="$remove,size/$other"
+          done
+
+          if [ -n "$type" ]; then add="$add,$type"; fi
+
+          if [ "$STATUS" = success ]; then
+            add="$add,ci:passing"
+            remove="$remove,ci:failing"
+            if [ "$draft" = false ]; then add="$add,ready-to-merge"; else remove="$remove,ready-to-merge"; fi
+          else
+            add="$add,ci:failing"
+            remove="$remove,ci:passing,ready-to-merge"
+          fi
+
+          gh pr edit "$PR" --repo "$REPO" \
+            --add-label "${add#,}" \
+            --remove-label "${remove#,}" || echo "note: labelling failed, continuing"
+
+      - name: Comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.read.outputs.pr }}
+          STATUS: ${{ steps.read.outputs.status }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          marker="<!-- pipeline-report -->"
+
+          if [ "$STATUS" = success ]; then
+            verdict="**All checks pass.** Ready for review and merge."
+          else
+            verdict="**Some checks failed.** The run log has the detail; nothing is merged until they pass."
+          fi
+
+          {
+            echo "$marker"
+            echo "## Pipeline"
+            echo
+            cat pr-report/report.md
+            echo
+            echo "$verdict"
+            echo
+            echo "<sub>Commit \`${SHA:0:7}\` · [run log]($RUN_URL) · this comment is updated in place on every push.</sub>"
+          } > body.md
+
+          existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq "[.[] | select(.user.type == \"Bot\") | select(.body | startswith(\"$marker\")) | .id] | first // empty")
+
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F body=@body.md >/dev/null
+            echo "updated comment $existing"
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@body.md >/dev/null
+            echo "posted a new comment"
+          fi

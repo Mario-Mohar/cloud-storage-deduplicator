@@ -7,7 +7,21 @@ from unittest.mock import Mock, patch
 import pytest
 from googleapiclient.errors import HttpError
 
-from drive_dedup.utils import retry_with_backoff, format_file_size, validate_folder_id, setup_logging
+from drive_dedup import utils as utils_module
+from drive_dedup.utils import (
+    format_file_size,
+    retry_with_backoff,
+    setup_logging,
+    validate_folder_id,
+)
+
+
+class RetryTestError(Exception):
+    """Raised by the functions under test, so pytest.raises can name a type.
+
+    `pytest.raises(Exception)` would also catch a TypeError from the decorator
+    itself and call that a pass.
+    """
 
 
 class TestRetryWithBackoff:
@@ -102,9 +116,9 @@ class TestRetryWithBackoff:
         @retry_with_backoff(max_retries=3, base_delay=0.1, backoff_factor=2.0)
         def failing_func():
             delays.append(time.time())
-            raise Exception("Test error")
+            raise RetryTestError("Test error")
 
-        with pytest.raises(Exception):
+        with pytest.raises(RetryTestError):
             failing_func()
 
         # Should have 4 calls (initial + 3 retries)
@@ -116,23 +130,27 @@ class TestRetryWithBackoff:
         assert time_diffs[1] >= 0.18  # Second retry delay ~0.2s
         assert time_diffs[2] >= 0.38  # Third retry delay ~0.4s
 
-    def test_max_delay_cap(self):
-        """Test that delay is capped at max_delay."""
-        delays = []
+    def test_max_delay_cap(self, monkeypatch):
+        """Delay grows by the backoff factor until it reaches max_delay, then stops.
+
+        The requested delays are asserted rather than the elapsed wall time.
+        Sleeping through them really took 70 seconds, and the assertion it
+        allowed -- that the total stayed under 100 seconds -- would have passed
+        with a cap that was wrong by a factor of six.
+        """
+        slept = []
+        monkeypatch.setattr(utils_module.time, "sleep", slept.append)
 
         @retry_with_backoff(max_retries=5, base_delay=10.0, max_delay=15.0, backoff_factor=2.0)
         def failing_func():
-            delays.append(time.time())
-            raise Exception("Test error")
+            raise RetryTestError("Test error")
 
-        start_time = time.time()
-        with pytest.raises(Exception):
+        with pytest.raises(RetryTestError):
             failing_func()
-        total_time = time.time() - start_time
 
-        # With max_delay=15.0, total time should be less than if delay kept growing
-        # (10 + 15 + 15 + 15 + 15 = 70s vs 10 + 20 + 40 + 80 + 160 = 310s)
-        assert total_time < 100  # Much less than uncapped growth
+        # 10 as given, then 20 capped to 15, and 15 from there on.
+        assert slept == [10.0, 15.0, 15.0, 15.0, 15.0]
+        assert all(delay <= 15.0 for delay in slept)
 
 
 class TestFormatFileSize:
@@ -254,7 +272,7 @@ class TestSetupLogging:
 
     def test_file_handler_added(self):
         """Test that file handler is added when log_file is specified."""
-        with patch('logging.basicConfig') as mock_basic_config, \
+        with patch('logging.basicConfig'), \
              patch('logging.FileHandler') as mock_file_handler, \
              patch('logging.getLogger') as mock_get_logger:
 

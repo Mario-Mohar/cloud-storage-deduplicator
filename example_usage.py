@@ -5,9 +5,10 @@ programmatically rather than through the CLI.
 """
 
 import logging
+
 from drive_dedup.auth import GoogleDriveAuth
-from drive_dedup.drive_client import GoogleDriveClient
 from drive_dedup.dedup import DuplicateDetector
+from drive_dedup.drive_client import GoogleDriveClient
 
 # Configure logging
 logging.basicConfig(
@@ -46,7 +47,7 @@ def main():
 
     # Step 5: Display results
     stats = detector.get_stats()
-    print(f"\nScan Results:")
+    print("\nScan Results:")
     print(f"- Total files scanned: {stats.total_files_scanned}")
     print(f"- Files with MD5: {stats.files_with_md5}")
     print(f"- Google Workspace files: {stats.google_workspace_files}")
@@ -54,7 +55,7 @@ def main():
     print(f"- Total duplicates: {stats.total_duplicates}")
 
     if duplicate_groups:
-        print(f"\nDuplicate Groups:")
+        print("\nDuplicate Groups:")
         for i, group in enumerate(duplicate_groups[:5], 1):  # Show first 5 groups
             print(f"Group {i}: {group.duplicate_count} duplicates of '{group.kept_file.name}'")
             for dup_file in group.duplicate_files:
@@ -64,7 +65,7 @@ def main():
             print(f"... and {len(duplicate_groups) - 5} more groups")
 
         # Step 6: Perform dry-run operation
-        print(f"\nPerforming dry-run to see what would be moved...")
+        print("\nPerforming dry-run to see what would be moved...")
         log_entries = detector.move_duplicates(
             duplicate_groups=duplicate_groups,
             target_folder_id="dummy_folder_id",  # Won't be used in dry-run
@@ -78,12 +79,12 @@ def main():
         detector.save_report(report, "duplicate_report.txt")
         detector.save_json_log(log_entries, "duplicate_operations.jsonl")
 
-        print(f"Reports saved:")
-        print(f"- Human-readable: duplicate_report.txt")
-        print(f"- Machine-readable: duplicate_operations.jsonl")
+        print("Reports saved:")
+        print("- Human-readable: duplicate_report.txt")
+        print("- Machine-readable: duplicate_operations.jsonl")
 
     else:
-        print(f"\n🎉 No duplicates found! Your Google Drive is clean.")
+        print("\n🎉 No duplicates found! Your Google Drive is clean.")
 
 if __name__ == "__main__":
     main()

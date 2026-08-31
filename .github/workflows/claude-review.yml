@@ -1,0 +1,116 @@
+name: Claude review
+
+# `/claude review` in a comment on a pull request. Review only: it may read the
+# code and post comments, and is denied every tool that could change the branch.
+#
+# Who may run it: the repository owner and anyone with write access. The check
+# uses author_association, which GitHub computes for the commenter -- these are
+# personal repositories, so there is no organisation team to ask.
+#
+# Needs the secret CLAUDE_CODE_OAUTH_TOKEN (create one with: claude setup-token).
+# Without it the job simply does not run.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  gate:
+    if: >-
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/claude review')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    outputs:
+      allowed: ${{ steps.check.outputs.allowed }}
+    steps:
+      - id: check
+        env:
+          ASSOCIATION: ${{ github.event.comment.author_association }}
+        run: |
+          case "$ASSOCIATION" in
+            OWNER|MEMBER|COLLABORATOR) echo "allowed=true" >> "$GITHUB_OUTPUT" ;;
+            *)                         echo "allowed=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: React to the request
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ALLOWED: ${{ steps.check.outputs.allowed }}
+        run: |
+          if [ "$ALLOWED" = true ]; then content=eyes; else content=-1; fi
+          gh api -X POST \
+            "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f "content=$content"
+
+  review:
+    needs: gate
+    if: needs.gate.outputs.allowed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: claude-review-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ github.event.issue.number }}/head
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Review pull request #${{ github.event.issue.number }} in ${{ github.repository }}, requested by @${{ github.event.comment.user.login }}:
+
+            ---
+            ${{ github.event.comment.body }}
+            ---
+
+            Text after `/claude review` is an optional focus. Honour it, but still report anything serious outside it.
+            The PR head is checked out. Use `gh pr view ${{ github.event.issue.number }}` and `gh pr diff ${{ github.event.issue.number }}`, and read the surrounding code as needed.
+
+            Steps:
+            1. Read CONTRIBUTING.md.
+            2. Read the title, description and diff.
+            3. Read the existing comments so you do not repeat them: `gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }}/comments` and `gh pr view ${{ github.event.issue.number }} --comments`. Skip anything an existing comment already covers.
+            4. Verify each candidate finding against the code. Drop what you cannot confirm.
+            5. Post one inline comment per confirmed finding with `mcp__github_inline_comment__create_inline_comment` (`confirmed: true`). Say what is wrong, why, and the fix. Add a committable suggestion only when it alone fully fixes the issue.
+            6. Post one new summary comment with `gh pr comment ${{ github.event.issue.number }} --body ...`. Never edit an earlier comment. Format:
+
+               ## Claude review
+               <one line verdict>
+               - <finding, file:line> per inline comment posted this run
+               Checked: <one line>. Model: claude-opus-5.
+
+               With no findings: "No issues found." plus what was checked.
+
+            Flag only what this pull request introduces:
+            - Bugs: wrong logic, crashes, undefined access, races, leaks (timers, processes, file descriptors), edge cases that will clearly be hit.
+            - Security: command injection, path traversal, unsafe file permissions, secrets in code, a `Text` item without an explicit `textFormat`.
+            - The rules in CONTRIBUTING.md.
+
+            Do not flag style or naming, pre-existing issues, anything the pipeline already catches, speculative input-dependent problems, or refactor ideas. If you are not sure it is real, do not post it.
+
+            Review only. Never edit files, commit, push, approve or request changes. Post each finding once. Keep comments short.
+          claude_args: |
+            --model claude-opus-5
+            --max-turns 60
+            --allowedTools "Read,Grep,Glob,LS,mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }}/comments:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
+            --disallowedTools "Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch"
+
+      - if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ github.event.issue.number }} \
+            --body "Claude review failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

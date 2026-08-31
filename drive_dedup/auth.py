@@ -1,16 +1,13 @@
 """Authentication module for Google Drive API access."""
 
-import json
 import logging
-import os
 from pathlib import Path
 from typing import List, Optional
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.discovery import Resource
+from googleapiclient.discovery import Resource, build
 
 from .base_client import BaseStorageAuth
 

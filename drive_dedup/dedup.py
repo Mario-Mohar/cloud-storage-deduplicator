@@ -5,7 +5,7 @@ import logging
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Set
+from typing import Dict, List, Optional
 
 from .drive_client import GoogleDriveClient
 from .models import DriveFile, DuplicateGroup, LogEntry, ScanStats
