@@ -7,8 +7,12 @@ name: CI
 # executes any of the code under test.
 
 on:
+  # Only the default branch on push. A branch with an open pull request would
+  # otherwise be checked twice for every commit -- once as a push and once as a
+  # pull request -- which doubles the minutes and puts two identically named
+  # status checks on the same commit.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 permissions:
