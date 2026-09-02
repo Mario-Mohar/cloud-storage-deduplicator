@@ -6,6 +6,7 @@ way — without downloading a single byte and without deleting anything.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://img.shields.io/badge/tests-66%20passing-brightgreen.svg)](#development)
+[![codecov](https://codecov.io/gh/Mario-Mohar/cloud-storage-deduplicator/graph/badge.svg)](https://codecov.io/gh/Mario-Mohar/cloud-storage-deduplicator)
 
 <p align="center">
   <img src="docs/report-example.png" alt="Terminal output of a dry run: a summary followed by three duplicate groups, each showing which file is kept and which are duplicates" width="760">
