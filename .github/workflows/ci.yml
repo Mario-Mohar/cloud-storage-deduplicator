@@ -49,6 +49,17 @@ jobs:
         continue-on-error: true
         run: pytest tests/ -v --junit-xml=pytest.xml --cov=drive_dedup --cov-report=term --cov-report=xml
 
+      # Codecov keeps the history behind the number and feeds the badge in the
+      # README. It never gates: a bad day at Codecov is no reason to fail a pull
+      # request, and a fork or a Dependabot branch has no secrets to offer
+      # anyway. The repository is public, so the upload needs no token.
+      - name: Coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+
       # The two below report but do not gate. Both were declared in
       # pyproject.toml long before anything ran them, so the code owes black 19
       # files and mypy 61 findings. Failing every unrelated pull request on that
