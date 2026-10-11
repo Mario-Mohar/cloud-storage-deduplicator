@@ -44,7 +44,10 @@ class GoogleDriveClient(BaseStorageClient):
         Returns:
             API response with files and nextPageToken
         """
-        query = "trashed=false"  # Only non-deleted files
+        # Only non-deleted files the user owns. Files shared with the user
+        # belong to someone else, and moving one would move it for its
+        # owner too, so they are never considered.
+        query = "trashed=false and 'me' in owners"
 
         request_params = {
             'q': query,

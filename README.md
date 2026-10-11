@@ -215,6 +215,10 @@ rather than guessing.
 What this tool does **not** do: delete files, change their contents, read their
 contents (metadata only), or touch sharing and permissions.
 
+On Google Drive, only files you own are scanned. Files shared with you, and
+files other people uploaded into your shared folders, belong to someone else and
+are left out entirely.
+
 Recommendations:
 
 1. Run a dry run first and read the report.
