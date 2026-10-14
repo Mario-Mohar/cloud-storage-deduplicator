@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -130,6 +130,24 @@ class GoogleDriveAuth(BaseStorageAuth):
         service = build('drive', 'v3', credentials=creds)
         logger.info("Created Google Drive service")
         return service
+
+    def get_service_factory(self) -> Callable[[], Resource]:
+        """Return a callable that builds a further Drive service.
+
+        Each service gets its own HTTP connection, which worker threads need:
+        httplib2.Http is not thread-safe. The factory reuses the credentials
+        already obtained, so it never starts an OAuth flow or writes the token
+        file from a worker thread.
+
+        Returns:
+            Callable returning a new Google Drive API service resource
+        """
+        creds = self.authenticate()
+
+        def factory() -> Resource:
+            return build('drive', 'v3', credentials=creds)
+
+        return factory
 
     def get_service(self) -> Resource:
         """Get authenticated service (alias for get_drive_service).

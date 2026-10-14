@@ -1,8 +1,9 @@
 """Google Drive API client wrapper with pagination and error handling."""
 
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Iterator, List, Optional
+from typing import Callable, Dict, Iterator, List, Optional
 
 from googleapiclient.discovery import Resource
 from googleapiclient.errors import HttpError
@@ -14,18 +15,50 @@ from .utils import retry_with_backoff
 logger = logging.getLogger(__name__)
 
 
+class AmbiguousFolderError(ValueError):
+    """More than one of the user's folders matches the requested name."""
+
+
+def _escape_query_value(value: str) -> str:
+    """Escape a string for use inside a quoted Drive query literal."""
+    return value.replace('\\', '\\\\').replace("'", "\\'")
+
+
 class GoogleDriveClient(BaseStorageClient):
     """High-level wrapper for Google Drive API operations."""
 
-    def __init__(self, service: Resource, max_workers: int = 5) -> None:
+    def __init__(
+        self,
+        service: Resource,
+        max_workers: int = 5,
+        service_factory: Optional[Callable[[], Resource]] = None
+    ) -> None:
         """Initialize Drive client.
 
         Args:
             service: Authenticated Google Drive service
             max_workers: Maximum number of concurrent operations
+            service_factory: Builds a fresh service for a worker thread.
+                A service wraps one httplib2.Http, which is not thread-safe,
+                so concurrent moves need one each. Without a factory the
+                moves run one at a time on `service`.
         """
         self.service = service
         self.max_workers = max_workers
+        self._service_factory = service_factory
+        self._owner_thread = threading.get_ident()
+        self._local = threading.local()
+
+    def _thread_service(self) -> Resource:
+        """The service this thread may use without sharing a connection."""
+        if (self._service_factory is None
+                or threading.get_ident() == self._owner_thread):
+            return self.service
+        service = getattr(self._local, 'service', None)
+        if service is None:
+            service = self._service_factory()
+            self._local.service = service
+        return service
 
     @retry_with_backoff(max_retries=3)
     def list_files_page(
@@ -176,8 +209,32 @@ class GoogleDriveClient(BaseStorageClient):
         return folder_id
 
     @retry_with_backoff(max_retries=3)
+    def _move_file_request(self, file_id: str, target_folder_id: str) -> None:
+        """Move one file, letting HttpError through so it can be retried."""
+        service = self._thread_service()
+
+        # Get current parents
+        file_metadata = service.files().get(
+            fileId=file_id, fields='parents'
+        ).execute()
+        # A retry after a move that did go through finds the file already in
+        # the target; removing the target again would orphan it.
+        previous_parents = ','.join(
+            p for p in file_metadata.get('parents', []) if p != target_folder_id
+        )
+
+        # Move file by updating parents
+        service.files().update(
+            fileId=file_id,
+            addParents=target_folder_id,
+            removeParents=previous_parents
+        ).execute()
+
     def move_file(self, file_id: str, target_folder_id: str) -> OperationResult:
         """Move a file to a different folder.
+
+        Rate limits (429/403) are retried with backoff by the inner request;
+        only an error that outlasts the retries becomes a failed result.
 
         Args:
             file_id: ID of file to move
@@ -187,18 +244,7 @@ class GoogleDriveClient(BaseStorageClient):
             OperationResult indicating success/failure
         """
         try:
-            # Get current parents
-            file_metadata = self.service.files().get(
-                fileId=file_id, fields='parents'
-            ).execute()
-            previous_parents = ','.join(file_metadata.get('parents', []))
-
-            # Move file by updating parents
-            self.service.files().update(
-                fileId=file_id,
-                addParents=target_folder_id,
-                removeParents=previous_parents
-            ).execute()
+            self._move_file_request(file_id, target_folder_id)
 
             logger.debug("Moved file %s to folder %s", file_id, target_folder_id)
             return OperationResult(
@@ -236,12 +282,16 @@ class GoogleDriveClient(BaseStorageClient):
         if not file_ids:
             return results
 
+        # Without a way to give each worker its own connection, the moves
+        # must not run side by side on the shared one.
+        workers = self.max_workers if self._service_factory else 1
+
         logger.info(
             "Moving %d files to folder %s with %d workers",
-            len(file_ids), target_folder_id, self.max_workers
+            len(file_ids), target_folder_id, workers
         )
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
             # Submit all move operations
             future_to_file_id = {
                 executor.submit(self.move_file, file_id, target_folder_id): file_id
@@ -250,7 +300,18 @@ class GoogleDriveClient(BaseStorageClient):
 
             # Collect results as they complete
             for future in as_completed(future_to_file_id):
-                result = future.result()
+                file_id = future_to_file_id[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    # One broken move must not end the run and lose the log
+                    # of the moves that already happened.
+                    result = OperationResult(
+                        success=False,
+                        file_id=file_id,
+                        operation="move",
+                        error_message=f"Failed to move file {file_id}: {e}"
+                    )
                 results.append(result)
 
                 if result.success:
@@ -322,32 +383,52 @@ class GoogleDriveClient(BaseStorageClient):
     ) -> str:
         """Find existing folder by name or create new one.
 
+        Only folders the user owns are considered, and without a parent only
+        those directly in My Drive: a same-named folder someone else shared
+        would make the moved duplicates visible to them.
+
         Args:
             name: Name of folder to find/create
             parent_id: ID of parent folder (None for root)
 
         Returns:
             ID of found or created folder
+
+        Raises:
+            AmbiguousFolderError: If more than one owned folder matches
         """
         # Search for existing folder
-        query = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-        if parent_id:
-            query += f" and '{parent_id}' in parents"
+        parent = parent_id or 'root'
+        query = (
+            f"name='{_escape_query_value(name)}'"
+            " and mimeType='application/vnd.google-apps.folder'"
+            " and trashed=false and 'me' in owners"
+            f" and '{_escape_query_value(parent)}' in parents"
+        )
 
+        folders = []
         try:
             results = self.service.files().list(
                 q=query,
                 fields='files(id,name)'
             ).execute()
-
             folders = results.get('files', [])
-            if folders:
-                folder_id = folders[0]['id']
-                logger.info("Found existing folder '%s': %s", name, folder_id)
-                return folder_id
 
         except HttpError as e:
             logger.warning("Error searching for folder '%s': %s", name, e)
+
+        if len(folders) > 1:
+            ids = ', '.join(f['id'] for f in folders)
+            raise AmbiguousFolderError(
+                f"{len(folders)} folders named '{name}' found in "
+                f"{'My Drive' if parent_id is None else 'folder ' + parent_id}"
+                f" ({ids}). Rename or remove all but one, or pass the one "
+                "you want with --move-folder-id."
+            )
+        if folders:
+            folder_id = folders[0]['id']
+            logger.info("Found existing folder '%s': %s", name, folder_id)
+            return folder_id
 
         # Create new folder if not found
         return self.create_folder(name, parent_id)

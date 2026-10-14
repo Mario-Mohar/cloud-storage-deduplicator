@@ -115,7 +115,8 @@ class DuplicateDetector:
         self,
         duplicate_groups: List[DuplicateGroup],
         target_folder_id: str,
-        dry_run: bool = True
+        dry_run: bool = True,
+        json_log_path: Optional[str] = None
     ) -> List[LogEntry]:
         """Move duplicate files to target folder.
 
@@ -123,6 +124,9 @@ class DuplicateDetector:
             duplicate_groups: List of duplicate groups to process
             target_folder_id: ID of folder to move duplicates to
             dry_run: If True, only simulate the operation
+            json_log_path: If given, each group's entry is appended to this
+                JSON Lines file as soon as the group is done, so a run that
+                fails part way still leaves a log `undo` can read
 
         Returns:
             List of log entries for the operations
@@ -180,6 +184,8 @@ class DuplicateDetector:
                 errors=errors if errors else None
             )
             log_entries.append(log_entry)
+            if json_log_path:
+                self.append_json_log(log_entry, json_log_path)
 
             if errors:
                 logger.warning(
@@ -297,6 +303,28 @@ class DuplicateDetector:
                 f.write('\n')
 
         logger.info("Saved JSON log with %d entries to: %s", len(log_entries), log_path)
+
+    def start_json_log(self, log_file_path: str) -> None:
+        """Create an empty JSON Lines log, replacing any earlier one.
+
+        Args:
+            log_file_path: Path of the log file
+        """
+        self.save_json_log([], log_file_path)
+
+    def append_json_log(self, log_entry: LogEntry, log_file_path: str) -> None:
+        """Append one entry to a JSON Lines log and flush it to disk.
+
+        Args:
+            log_entry: Entry to append
+            log_file_path: Path of the log file
+        """
+        log_path = Path(log_file_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(log_path, 'a', encoding='utf-8') as f:
+            json.dump(log_entry.__dict__, f, ensure_ascii=False)
+            f.write('\n')
 
     def save_report(
         self,
