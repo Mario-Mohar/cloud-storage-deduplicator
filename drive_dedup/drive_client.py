@@ -15,6 +15,15 @@ from .utils import retry_with_backoff
 logger = logging.getLogger(__name__)
 
 
+class AmbiguousFolderError(ValueError):
+    """More than one of the user's folders matches the requested name."""
+
+
+def _escape_query_value(value: str) -> str:
+    """Escape a string for use inside a quoted Drive query literal."""
+    return value.replace('\\', '\\\\').replace("'", "\\'")
+
+
 class GoogleDriveClient(BaseStorageClient):
     """High-level wrapper for Google Drive API operations."""
 
@@ -374,32 +383,52 @@ class GoogleDriveClient(BaseStorageClient):
     ) -> str:
         """Find existing folder by name or create new one.
 
+        Only folders the user owns are considered, and without a parent only
+        those directly in My Drive: a same-named folder someone else shared
+        would make the moved duplicates visible to them.
+
         Args:
             name: Name of folder to find/create
             parent_id: ID of parent folder (None for root)
 
         Returns:
             ID of found or created folder
+
+        Raises:
+            AmbiguousFolderError: If more than one owned folder matches
         """
         # Search for existing folder
-        query = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-        if parent_id:
-            query += f" and '{parent_id}' in parents"
+        parent = parent_id or 'root'
+        query = (
+            f"name='{_escape_query_value(name)}'"
+            " and mimeType='application/vnd.google-apps.folder'"
+            " and trashed=false and 'me' in owners"
+            f" and '{_escape_query_value(parent)}' in parents"
+        )
 
+        folders = []
         try:
             results = self.service.files().list(
                 q=query,
                 fields='files(id,name)'
             ).execute()
-
             folders = results.get('files', [])
-            if folders:
-                folder_id = folders[0]['id']
-                logger.info("Found existing folder '%s': %s", name, folder_id)
-                return folder_id
 
         except HttpError as e:
             logger.warning("Error searching for folder '%s': %s", name, e)
+
+        if len(folders) > 1:
+            ids = ', '.join(f['id'] for f in folders)
+            raise AmbiguousFolderError(
+                f"{len(folders)} folders named '{name}' found in "
+                f"{'My Drive' if parent_id is None else 'folder ' + parent_id}"
+                f" ({ids}). Rename or remove all but one, or pass the one "
+                "you want with --move-folder-id."
+            )
+        if folders:
+            folder_id = folders[0]['id']
+            logger.info("Found existing folder '%s': %s", name, folder_id)
+            return folder_id
 
         # Create new folder if not found
         return self.create_folder(name, parent_id)

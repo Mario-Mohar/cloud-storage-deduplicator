@@ -7,7 +7,7 @@ import pytest
 from googleapiclient.errors import HttpError
 
 from drive_dedup import utils as utils_module
-from drive_dedup.drive_client import GoogleDriveClient
+from drive_dedup.drive_client import AmbiguousFolderError, GoogleDriveClient
 
 
 def test_listing_only_asks_for_owned_files(mock_google_drive_service):
@@ -181,3 +181,63 @@ class TestMoveRetries:
         assert result.success is False
         sleep.assert_not_called()
 
+
+class TestFindOrCreateFolder:
+    """Issue #14: only the user's own folder in My Drive may be picked."""
+
+    def _query(self, service):
+        return service.files.return_value.list.call_args.kwargs["q"]
+
+    def test_query_is_limited_to_owned_folders_in_my_drive(
+        self, mock_google_drive_service
+    ):
+        client = GoogleDriveClient(mock_google_drive_service)
+
+        client.find_or_create_folder("_duplicates")
+
+        query = self._query(mock_google_drive_service)
+        assert "'me' in owners" in query
+        assert "'root' in parents" in query
+        assert "trashed=false" in query
+
+    def test_query_uses_the_given_parent(self, mock_google_drive_service):
+        client = GoogleDriveClient(mock_google_drive_service)
+
+        client.find_or_create_folder("_duplicates", parent_id="PARENT")
+
+        query = self._query(mock_google_drive_service)
+        assert "'PARENT' in parents" in query
+        assert "'root' in parents" not in query
+
+    def test_name_is_escaped(self, mock_google_drive_service):
+        client = GoogleDriveClient(mock_google_drive_service)
+
+        client.find_or_create_folder("Mario's \\ stuff")
+
+        assert "name='Mario\\'s \\\\ stuff'" in self._query(mock_google_drive_service)
+
+    def test_existing_folder_is_used(self, mock_google_drive_service):
+        files = mock_google_drive_service.files.return_value
+        files.list.return_value.execute.return_value = {
+            'files': [{'id': 'MINE', 'name': '_duplicates'}]
+        }
+        client = GoogleDriveClient(mock_google_drive_service)
+
+        assert client.find_or_create_folder("_duplicates") == "MINE"
+        files.create.assert_not_called()
+
+    def test_missing_folder_is_created(self, mock_google_drive_service):
+        client = GoogleDriveClient(mock_google_drive_service)
+
+        assert client.find_or_create_folder("_duplicates") == "new_folder_id"
+
+    def test_two_matching_folders_are_an_error(self, mock_google_drive_service):
+        files = mock_google_drive_service.files.return_value
+        files.list.return_value.execute.return_value = {
+            'files': [{'id': 'A', 'name': 'x'}, {'id': 'B', 'name': 'x'}]
+        }
+        client = GoogleDriveClient(mock_google_drive_service)
+
+        with pytest.raises(AmbiguousFolderError, match="--move-folder-id"):
+            client.find_or_create_folder("x")
+        files.create.assert_not_called()
