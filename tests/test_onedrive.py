@@ -5,8 +5,31 @@ from unittest.mock import Mock, patch
 import pytest
 import requests
 
+from drive_dedup import onedrive_client as onedrive_module
 from drive_dedup.models import DriveFile, OperationResult
-from drive_dedup.onedrive_client import OneDriveClient
+from drive_dedup.onedrive_client import OneDriveClient, retry_with_backoff_requests
+
+
+def graph_error(status, headers=None):
+    """An HTTPError carrying a real Response, as raise_for_status() raises it.
+
+    A real Response matters: it is falsy for every 4xx/5xx, which a Mock is not.
+    """
+    response = requests.Response()
+    response.status_code = status
+    response.headers.update(headers or {})
+    return requests.exceptions.HTTPError(f"{status} Error", response=response)
+
+
+def graph_response(status=200, body=None, headers=None):
+    response = Mock()
+    response.status_code = status
+    response.json.return_value = body or {}
+    if status >= 400:
+        response.raise_for_status.side_effect = graph_error(status, headers)
+    else:
+        response.raise_for_status = Mock()
+    return response
 
 
 @pytest.fixture
@@ -149,10 +172,13 @@ class TestOneDriveClient:
         """Test failed file move."""
         mock_response = Mock()
         mock_response.status_code = 404
-        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("Not found")
+        mock_response.raise_for_status.side_effect = graph_error(404)
         mock_request.return_value = mock_response
 
-        result = onedrive_client.move_file('nonexistent', 'target_folder')
+        with patch.object(onedrive_module.time, 'sleep') as sleep:
+            result = onedrive_client.move_file('nonexistent', 'target_folder')
+
+        sleep.assert_not_called()
 
         assert isinstance(result, OperationResult)
         assert result.success is False
@@ -209,6 +235,62 @@ class TestOneDriveClient:
         folder_info = onedrive_client.get_folder_info('file1')
 
         assert folder_info is None
+
+
+class TestStatusDetection:
+    """Issue #13: the status of an error response must actually be read."""
+
+    def test_folder_not_found_returns_none(self, onedrive_client):
+        with patch.object(requests.Session, 'request',
+                          return_value=graph_response(404)), \
+                patch.object(onedrive_module.time, 'sleep') as sleep:
+            assert onedrive_client.get_folder_info('missing') is None
+        sleep.assert_not_called()
+
+    @pytest.mark.parametrize("status", [401, 403, 404])
+    def test_client_errors_are_not_retried(self, status):
+        calls = []
+
+        @retry_with_backoff_requests(max_retries=3)
+        def call():
+            calls.append(1)
+            raise graph_error(status)
+
+        with patch.object(onedrive_module.time, 'sleep') as sleep, \
+                pytest.raises(requests.exceptions.HTTPError):
+            call()
+        assert len(calls) == 1
+        sleep.assert_not_called()
+
+    def test_retry_after_is_honoured(self):
+        calls = []
+
+        @retry_with_backoff_requests(max_retries=3)
+        def call():
+            calls.append(1)
+            if len(calls) == 1:
+                raise graph_error(429, {'Retry-After': '7'})
+            return "ok"
+
+        with patch.object(onedrive_module.time, 'sleep') as sleep:
+            assert call() == "ok"
+        sleep.assert_called_once_with(7.0)
+
+    def test_retry_after_as_a_date_falls_back_to_backoff(self):
+        calls = []
+
+        @retry_with_backoff_requests(max_retries=3, base_delay=1.0)
+        def call():
+            calls.append(1)
+            if len(calls) == 1:
+                raise graph_error(
+                    429, {'Retry-After': 'Wed, 21 Oct 2026 07:28:00 GMT'}
+                )
+            return "ok"
+
+        with patch.object(onedrive_module.time, 'sleep') as sleep:
+            assert call() == "ok"
+        sleep.assert_called_once_with(1.0)
 
 
 class TestOneDriveAuth:

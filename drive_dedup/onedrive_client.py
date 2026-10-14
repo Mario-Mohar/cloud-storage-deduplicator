@@ -28,7 +28,9 @@ def retry_with_backoff_requests(max_retries: int = 3, base_delay: float = 1.0):
                     return func(*args, **kwargs)
                 except requests.exceptions.HTTPError as e:
                     last_exception = e
-                    status_code = e.response.status_code if e.response else 0
+                    # A Response is falsy for every 4xx/5xx (bool() is .ok), so this
+                    # has to test for None, not truthiness.
+                    status_code = e.response.status_code if e.response is not None else 0
 
                     # Don't retry client errors (except rate limiting)
                     if 400 <= status_code < 500 and status_code != 429:
@@ -38,7 +40,11 @@ def retry_with_backoff_requests(max_retries: int = 3, base_delay: float = 1.0):
                     if status_code == 429:
                         # Use Retry-After header if available
                         retry_after = e.response.headers.get('Retry-After', base_delay * (2 ** attempt))
-                        delay = float(retry_after)
+                        try:
+                            delay = float(retry_after)
+                        except (TypeError, ValueError):
+                            # Retry-After may also be an HTTP date
+                            delay = base_delay * (2 ** attempt)
                     else:
                         delay = base_delay * (2 ** attempt)
 
@@ -435,7 +441,7 @@ class OneDriveClient(BaseStorageClient):
                 return None
 
         except requests.exceptions.HTTPError as e:
-            if e.response and e.response.status_code == 404:
+            if e.response is not None and e.response.status_code == 404:
                 logger.debug("Folder %s not found", folder_id)
                 return None
             else:
