@@ -1,8 +1,9 @@
 """Google Drive API client wrapper with pagination and error handling."""
 
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Iterator, List, Optional
+from typing import Callable, Dict, Iterator, List, Optional
 
 from googleapiclient.discovery import Resource
 from googleapiclient.errors import HttpError
@@ -17,15 +18,38 @@ logger = logging.getLogger(__name__)
 class GoogleDriveClient(BaseStorageClient):
     """High-level wrapper for Google Drive API operations."""
 
-    def __init__(self, service: Resource, max_workers: int = 5) -> None:
+    def __init__(
+        self,
+        service: Resource,
+        max_workers: int = 5,
+        service_factory: Optional[Callable[[], Resource]] = None
+    ) -> None:
         """Initialize Drive client.
 
         Args:
             service: Authenticated Google Drive service
             max_workers: Maximum number of concurrent operations
+            service_factory: Builds a fresh service for a worker thread.
+                A service wraps one httplib2.Http, which is not thread-safe,
+                so concurrent moves need one each. Without a factory the
+                moves run one at a time on `service`.
         """
         self.service = service
         self.max_workers = max_workers
+        self._service_factory = service_factory
+        self._owner_thread = threading.get_ident()
+        self._local = threading.local()
+
+    def _thread_service(self) -> Resource:
+        """The service this thread may use without sharing a connection."""
+        if (self._service_factory is None
+                or threading.get_ident() == self._owner_thread):
+            return self.service
+        service = getattr(self._local, 'service', None)
+        if service is None:
+            service = self._service_factory()
+            self._local.service = service
+        return service
 
     @retry_with_backoff(max_retries=3)
     def list_files_page(
@@ -178,7 +202,7 @@ class GoogleDriveClient(BaseStorageClient):
     @retry_with_backoff(max_retries=3)
     def _move_file_request(self, file_id: str, target_folder_id: str) -> None:
         """Move one file, letting HttpError through so it can be retried."""
-        service = self.service
+        service = self._thread_service()
 
         # Get current parents
         file_metadata = service.files().get(
@@ -249,12 +273,16 @@ class GoogleDriveClient(BaseStorageClient):
         if not file_ids:
             return results
 
+        # Without a way to give each worker its own connection, the moves
+        # must not run side by side on the shared one.
+        workers = self.max_workers if self._service_factory else 1
+
         logger.info(
             "Moving %d files to folder %s with %d workers",
-            len(file_ids), target_folder_id, self.max_workers
+            len(file_ids), target_folder_id, workers
         )
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
             # Submit all move operations
             future_to_file_id = {
                 executor.submit(self.move_file, file_id, target_folder_id): file_id
@@ -263,7 +291,18 @@ class GoogleDriveClient(BaseStorageClient):
 
             # Collect results as they complete
             for future in as_completed(future_to_file_id):
-                result = future.result()
+                file_id = future_to_file_id[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    # One broken move must not end the run and lose the log
+                    # of the moves that already happened.
+                    result = OperationResult(
+                        success=False,
+                        file_id=file_id,
+                        operation="move",
+                        error_message=f"Failed to move file {file_id}: {e}"
+                    )
                 results.append(result)
 
                 if result.success:

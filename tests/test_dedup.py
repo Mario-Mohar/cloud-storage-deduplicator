@@ -394,3 +394,54 @@ class TestDuplicateDetector:
         assert detector._format_size(1048576) == "1.0 MB"
         assert detector._format_size(1073741824) == "1.0 GB"
         assert detector._format_size(512) == "512 B"
+
+
+class TestJsonLogAsTheRunGoes:
+    """Issue #10: a run that breaks off part way must leave an undo-able log."""
+
+    def _groups(self):
+        groups = []
+        for n in range(3):
+            files = [
+                DriveFile(id=f"keep{n}", name=f"k{n}.pdf", mime_type="application/pdf",
+                          parents=["SRC"]),
+                DriveFile(id=f"dup{n}", name=f"d{n}.pdf", mime_type="application/pdf",
+                          parents=["SRC"]),
+            ]
+            groups.append(DuplicateGroup(files=files, comparison_key=f"key{n}"))
+        return groups
+
+    def test_groups_done_before_a_crash_are_logged(self, tmp_path):
+        from drive_dedup.models import OperationResult
+        from drive_dedup.undo import plan_undo, read_log
+
+        client = Mock()
+        client.move_files_batch.side_effect = [
+            [OperationResult(success=True, file_id="dup0", operation="move")],
+            RuntimeError("connection dropped"),
+        ]
+        detector = DuplicateDetector(drive_client=client)
+        log_path = tmp_path / "run.jsonl"
+        detector.start_json_log(str(log_path))
+
+        with pytest.raises(RuntimeError):
+            detector.move_duplicates(
+                self._groups(), "DUPS", dry_run=False, json_log_path=str(log_path)
+            )
+
+        steps, _ = plan_undo(list(read_log(str(log_path))))
+        assert [(s.file_id, s.target_folder_id) for s in steps] == [("dup0", "SRC")]
+
+    def test_start_json_log_replaces_an_old_log(self, tmp_path):
+        log_path = tmp_path / "run.jsonl"
+        log_path.write_text('{"old": true}\n')
+        detector = DuplicateDetector(drive_client=Mock())
+
+        detector.start_json_log(str(log_path))
+        detector.move_duplicates(
+            self._groups(), "DUPS", dry_run=True, json_log_path=str(log_path)
+        )
+
+        lines = log_path.read_text().splitlines()
+        assert len(lines) == 3
+        assert all(json.loads(line)["action"] == "dry-run" for line in lines)

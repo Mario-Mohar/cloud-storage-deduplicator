@@ -402,7 +402,18 @@ class OneDriveClient(BaseStorageClient):
             }
 
             for future in as_completed(future_to_file_id):
-                result = future.result()
+                file_id = future_to_file_id[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    # One broken move must not end the run and lose the log
+                    # of the moves that already happened.
+                    result = OperationResult(
+                        success=False,
+                        file_id=file_id,
+                        operation="move",
+                        error_message=f"Failed to move file {file_id}: {e}"
+                    )
                 results.append(result)
 
                 if result.success:

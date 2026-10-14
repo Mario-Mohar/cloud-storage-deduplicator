@@ -225,7 +225,11 @@ def get_provider_client(
             scopes=oauth_scopes
         )
         service = auth.get_drive_service()
-        client = GoogleDriveClient(service, max_workers=concurrency)
+        client = GoogleDriveClient(
+            service,
+            max_workers=concurrency,
+            service_factory=auth.get_service_factory()
+        )
         return client, "Google Drive"
 
     elif provider == 'onedrive':
@@ -596,6 +600,11 @@ def main(
             click.echo(f"No duplicates found! Your {provider_name} is clean.")
             return
 
+        # The JSON log is written group by group as the run goes, so that a
+        # run that breaks off part way can still be undone.
+        if json_log:
+            detector.start_json_log(json_log)
+
         # Process in batches if requested
         if batch_size > 0 and not dry_run:
             total_moved = 0
@@ -662,7 +671,8 @@ def main(
         log_entries = detector.move_duplicates(
             duplicate_groups=duplicate_groups,
             target_folder_id=target_folder_id or "",
-            dry_run=dry_run
+            dry_run=dry_run,
+            json_log_path=json_log
         )
 
         # Generate and display report
@@ -673,7 +683,6 @@ def main(
             click.echo(f"Report saved to: {log_file}")
 
         if json_log:
-            detector.save_json_log(log_entries, json_log)
             click.echo(f"JSON log saved to: {json_log}")
 
         # Show summary

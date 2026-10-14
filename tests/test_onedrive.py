@@ -320,6 +320,22 @@ class TestMoveRetries:
         assert result.success is False
         assert sleep.call_count == 3
 
+    def test_a_crashing_move_in_a_batch_becomes_a_failed_result(
+        self, onedrive_client
+    ):
+        def move(file_id, target_folder_id):
+            if file_id == 'bad':
+                raise requests.exceptions.ConnectionError("reset by peer")
+            return OperationResult(success=True, file_id=file_id, operation="move")
+
+        with patch.object(onedrive_client, 'move_file', side_effect=move):
+            results = onedrive_client.move_files_batch(['a', 'bad', 'b'], 'DUPS')
+
+        by_id = {r.file_id: r for r in results}
+        assert by_id['a'].success and by_id['b'].success
+        assert by_id['bad'].success is False
+        assert "reset by peer" in by_id['bad'].error_message
+
 
 class TestOneDriveAuth:
     """Tests for OneDriveAuth class."""
