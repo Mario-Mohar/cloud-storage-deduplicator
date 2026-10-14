@@ -293,6 +293,34 @@ class TestStatusDetection:
         sleep.assert_called_once_with(1.0)
 
 
+class TestMoveRetries:
+    """Issue #12: a rate-limited move is retried before it counts as failed."""
+
+    def test_rate_limited_move_is_retried(self, onedrive_client):
+        responses = [
+            graph_response(429, headers={'Retry-After': '2'}),
+            graph_response(429, headers={'Retry-After': '3'}),
+            graph_response(200, {'id': 'f1'}),
+        ]
+        with patch.object(requests.Session, 'request',
+                          side_effect=responses) as request, \
+                patch.object(onedrive_module.time, 'sleep') as sleep:
+            result = onedrive_client.move_file('f1', 'DUPS')
+
+        assert result.success is True
+        assert request.call_count == 3
+        assert [c.args[0] for c in sleep.call_args_list] == [2.0, 3.0]
+
+    def test_gives_up_with_a_failed_result(self, onedrive_client):
+        with patch.object(requests.Session, 'request',
+                          return_value=graph_response(429)), \
+                patch.object(onedrive_module.time, 'sleep') as sleep:
+            result = onedrive_client.move_file('f1', 'DUPS')
+
+        assert result.success is False
+        assert sleep.call_count == 3
+
+
 class TestOneDriveAuth:
     """Tests for OneDriveAuth class."""
 

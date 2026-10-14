@@ -327,8 +327,22 @@ class OneDriveClient(BaseStorageClient):
         return folder_id
 
     @retry_with_backoff_requests(max_retries=3)
+    def _move_file_request(self, file_id: str, target_folder_id: str) -> None:
+        """Move one file, letting HTTPError through so it can be retried."""
+        endpoint = f"/me/drive/items/{file_id}"
+        body = {
+            "parentReference": {
+                "id": target_folder_id
+            }
+        }
+
+        self._make_request("PATCH", endpoint, json=body)
+
     def move_file(self, file_id: str, target_folder_id: str) -> OperationResult:
         """Move a file to a different folder.
+
+        Rate limits (429) are retried with backoff by the inner request; only
+        an error that outlasts the retries becomes a failed result.
 
         Args:
             file_id: ID of file to move
@@ -338,14 +352,7 @@ class OneDriveClient(BaseStorageClient):
             OperationResult indicating success/failure
         """
         try:
-            endpoint = f"/me/drive/items/{file_id}"
-            body = {
-                "parentReference": {
-                    "id": target_folder_id
-                }
-            }
-
-            self._make_request("PATCH", endpoint, json=body)
+            self._move_file_request(file_id, target_folder_id)
 
             logger.debug("Moved file %s to folder %s", file_id, target_folder_id)
             return OperationResult(

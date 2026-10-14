@@ -176,8 +176,32 @@ class GoogleDriveClient(BaseStorageClient):
         return folder_id
 
     @retry_with_backoff(max_retries=3)
+    def _move_file_request(self, file_id: str, target_folder_id: str) -> None:
+        """Move one file, letting HttpError through so it can be retried."""
+        service = self.service
+
+        # Get current parents
+        file_metadata = service.files().get(
+            fileId=file_id, fields='parents'
+        ).execute()
+        # A retry after a move that did go through finds the file already in
+        # the target; removing the target again would orphan it.
+        previous_parents = ','.join(
+            p for p in file_metadata.get('parents', []) if p != target_folder_id
+        )
+
+        # Move file by updating parents
+        service.files().update(
+            fileId=file_id,
+            addParents=target_folder_id,
+            removeParents=previous_parents
+        ).execute()
+
     def move_file(self, file_id: str, target_folder_id: str) -> OperationResult:
         """Move a file to a different folder.
+
+        Rate limits (429/403) are retried with backoff by the inner request;
+        only an error that outlasts the retries becomes a failed result.
 
         Args:
             file_id: ID of file to move
@@ -187,18 +211,7 @@ class GoogleDriveClient(BaseStorageClient):
             OperationResult indicating success/failure
         """
         try:
-            # Get current parents
-            file_metadata = self.service.files().get(
-                fileId=file_id, fields='parents'
-            ).execute()
-            previous_parents = ','.join(file_metadata.get('parents', []))
-
-            # Move file by updating parents
-            self.service.files().update(
-                fileId=file_id,
-                addParents=target_folder_id,
-                removeParents=previous_parents
-            ).execute()
+            self._move_file_request(file_id, target_folder_id)
 
             logger.debug("Moved file %s to folder %s", file_id, target_folder_id)
             return OperationResult(
