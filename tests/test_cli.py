@@ -71,3 +71,25 @@ class TestBatchedRunsCanBeUndone:
             ("b0", "SRC0"), ("b1", "SRC1")
         ]
         assert "Files moved: 2" in report_path.read_text()
+
+
+class TestResumeScanWithoutBatches:
+    """Issue #16: --resume-scan without --batch-size crashed in the summary."""
+
+    def test_resumed_run_prints_summary_from_saved_scan(self, tmp_path):
+        scan_path = tmp_path / "scan.json"
+        result = run_cli(['--save-scan', str(scan_path)], FakeStorageClient())
+        assert result.exit_code == 0, result.output
+
+        client = FakeStorageClient()
+        result = run_cli([
+            '--no-dry-run', '--move-folder-id', 'DUPSFOLDER123',
+            '--resume-scan', str(scan_path),
+        ], client)
+
+        assert result.exit_code == 0, result.output
+        assert sorted(client.moves) == ["b0", "b1"]
+        assert "Files scanned: 4" in result.output
+        assert "Duplicate groups: 2" in result.output
+        assert "Total duplicates: 2" in result.output
+        assert "Files moved: 2" in result.output

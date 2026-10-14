@@ -579,6 +579,15 @@ def main(
             except Exception as e:
                 click.echo(f"Failed to load: {e}", err=True)
                 sys.exit(1)
+
+            # No scan ran, so fill the detector's stats from the loaded groups;
+            # the summary and the report read them. "Files scanned" then counts
+            # the files in the saved groups, the only ones this run knows about.
+            stats = detector.get_stats()
+            for group in duplicate_groups:
+                for drive_file in group.files:
+                    stats.add_file(drive_file)
+                stats.add_duplicate_group(group)
         else:
             # Scan for duplicates
             click.echo(f"Scanning {provider_name} for duplicate files...")
