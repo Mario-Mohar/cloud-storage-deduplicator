@@ -610,6 +610,8 @@ def main(
             total_moved = 0
             total_errors = 0
             batch_num = 0
+            all_groups = list(duplicate_groups)
+            all_log_entries = []
 
             # Auto-save file for batch processing.
             # Deliberately NOT save_scan itself: that file is what the user asked
@@ -635,8 +637,10 @@ def main(
                 log_entries = detector.move_duplicates(
                     duplicate_groups=current_batch,
                     target_folder_id=target_folder_id or "",
-                    dry_run=False
+                    dry_run=False,
+                    json_log_path=json_log
                 )
+                all_log_entries.extend(log_entries)
 
                 # Count results off the detector's own counters. log_entries
                 # holds one entry per GROUP, so counting them reported groups
@@ -657,6 +661,15 @@ def main(
                     save_duplicate_groups(remaining, batch_save_file)
                     click.echo(f"Progress saved to: {batch_save_file}")
                     click.echo(f"Zum Fortsetzen: --resume-scan {batch_save_file}")
+
+            report = detector.generate_report(all_groups, all_log_entries)
+
+            if log_file:
+                detector.save_report(report, log_file)
+                click.echo(f"Report saved to: {log_file}")
+
+            if json_log:
+                click.echo(f"JSON log saved to: {json_log}")
 
             click.echo()
             click.echo(f"=== DONE: {total_moved} files moved, {total_errors} errors ===")
