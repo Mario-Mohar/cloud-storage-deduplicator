@@ -9,6 +9,12 @@ name: PR report
 # write token, and never checks out or executes the contributed code -- it only
 # reads the artifact CI produced. That is the difference between this and
 # pull_request_target, which would hand a write token to a fork's code.
+#
+# The artifact itself is written by the contributed code, so nothing in it is
+# trusted except the report text. Which pull request to touch and whether CI
+# passed come from the workflow_run event: the pull request is the open one
+# whose head is exactly the commit CI ran on, and the verdict is the run's own
+# conclusion (ci.yml fails the job whenever a check fails).
 
 on:
   workflow_run:
@@ -35,15 +41,28 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Read the report
+      - name: Find the pull request
         id: read
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
         run: |
-          pr=$(cat pr-report/pr-number.txt)
-          status=$(cat pr-report/status.txt)
+          set -euo pipefail
+          pr=$(gh api -X GET "repos/$REPO/pulls" -f state=open -f head="$HEAD_OWNER:$HEAD_BRANCH" \
+            --jq "[.[] | select(.head.sha == \"$HEAD_SHA\") | .number] | first // empty")
+          if [ -z "$pr" ]; then
+            echo "No open pull request has $HEAD_SHA as its head; nothing to report."
+          fi
+          if [ "$CONCLUSION" = success ]; then status=success; else status=failure; fi
           echo "pr=$pr" >> "$GITHUB_OUTPUT"
           echo "status=$status" >> "$GITHUB_OUTPUT"
 
       - name: Label
+        if: steps.read.outputs.pr != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -111,6 +130,7 @@ jobs:
             --remove-label "${remove#,}" || echo "note: labelling failed, continuing"
 
       - name: Comment
+        if: steps.read.outputs.pr != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -132,7 +152,9 @@ jobs:
             echo "$marker"
             echo "## Pipeline"
             echo
-            cat pr-report/report.md
+            # Written by the contributed code. It only ever lands on the pull
+            # request that code belongs to, and it is capped.
+            head -c 20000 pr-report/report.md 2>/dev/null || true
             echo
             echo "$verdict"
             echo
